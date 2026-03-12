@@ -89,6 +89,7 @@ impl Transaction {
     /// let tx = Transaction::new("Send 5 BTC".to_string());
     /// assert_eq!(tx.get_data(), "Send 5 BTC");
     /// ```
+    #[allow(dead_code)]
     pub fn get_data(&self) -> &String {
         &self.data
     }

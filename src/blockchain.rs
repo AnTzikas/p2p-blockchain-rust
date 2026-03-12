@@ -1,6 +1,7 @@
 use crate::block::Block;
 use crate::transaction::Transaction;
-use log::{info, error};
+use tracing::{info, error};
+
 
 /// Represents the blockchain, a distributed ledger composed of sequential blocks.
 ///
@@ -110,6 +111,7 @@ impl Blockchain {
     /// # Arguments
     ///
     /// * `transactions` - A vector of `Transaction` instances to include in the block.
+    #[allow(dead_code)]
     pub fn add_create_block(&mut self, transactions: Vec<Transaction>) {
         let prev_block = self.blocks.last().unwrap();
         let new_block = Block::new_block(
@@ -172,7 +174,104 @@ impl Blockchain {
     }
 
     /// Returns an iterator over the blocks in the blockchain.
+    #[allow(dead_code)] 
     pub fn iter(&self) -> std::slice::Iter<Block> {
         self.blocks.iter()
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Helper to create a blockchain with n blocks
+    fn create_blockchain_with_blocks(n: usize) -> Blockchain {
+        let mut bc = Blockchain::new();
+        for i in 0..n {
+            let tx = Transaction::new(format!("tx_{}", i));
+            bc.add_create_block(vec![tx]);
+        }
+        bc
+    }
+
+    #[test]
+    fn test_new_blockchain_has_genesis_block() {
+        let bc = Blockchain::new();
+        assert_eq!(bc.get_blocks().len(), 1);
+    }
+
+    #[test]
+    fn test_genesis_block_hash_is_not_empty() {
+        let bc = Blockchain::new();
+        assert!(!bc.get_last_block().unwrap().get_hash().is_empty());
+    }
+
+    #[test]
+    fn test_new_blockchain_is_valid() {
+        let bc = Blockchain::new();
+        assert!(bc.is_valid());
+    }
+
+    #[test]
+    fn test_add_create_block_increases_length() {
+        let mut bc = Blockchain::new();
+        let tx = Transaction::new("test transaction".to_string());
+        bc.add_create_block(vec![tx]);
+        assert_eq!(bc.get_blocks().len(), 2);
+    }
+
+    #[test]
+    fn test_chain_valid_after_adding_blocks() {
+        let bc = create_blockchain_with_blocks(3);
+        assert_eq!(bc.get_blocks().len(), 4); // genesis + 3
+        assert!(bc.is_valid());
+    }
+
+    #[test]
+    fn test_add_block_rejects_invalid_previous_hash() {
+        let mut bc = Blockchain::new();
+        let tx = Transaction::new("tx".to_string());
+        // Create a block with a wrong previous hash
+        let bad_block = crate::block::Block::new_block(
+            "wrong_hash".to_string(),
+            &[tx],
+            1,
+        );
+        let result = bc.add_block(bad_block);
+        assert!(!result);
+        assert_eq!(bc.get_blocks().len(), 1); // chain unchanged
+    }
+
+    #[test]
+    fn test_tampered_chain_is_invalid() {
+        let chain1 = create_blockchain_with_blocks(2);
+        let chain2 = create_blockchain_with_blocks(1);
+
+        // Build a hybrid chain: take blocks from different chains
+        // block[0] from chain1, block[1] from chain2 — hashes won't match
+        let tampered = vec![
+            chain1.get_blocks()[0].clone(),
+            chain2.get_blocks()[1].clone(),
+        ];
+        // Manually corrupt by mixing chains
+        let bc = Blockchain::from_blocks(tampered);
+        assert!(!bc.is_valid());
+    }
+
+    #[test]
+    fn test_get_last_block_returns_latest() {
+        let bc = create_blockchain_with_blocks(2);
+        let last = bc.get_last_block().unwrap();
+        assert_eq!(last.get_height(), 2);
+    }
+
+    #[test]
+    fn test_from_blocks_preserves_chain() {
+        let bc = create_blockchain_with_blocks(2);
+        let blocks = bc.get_blocks().clone();
+        let restored = Blockchain::from_blocks(blocks);
+        assert!(restored.is_valid());
+        assert_eq!(restored.get_blocks().len(), 3);
     }
 }
