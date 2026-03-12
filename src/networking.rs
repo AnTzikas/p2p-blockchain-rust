@@ -56,7 +56,7 @@ pub struct CustomBehaviour {
 #[derive(Debug)]
 pub enum CustomBehaviourEvent {
     /// Event triggered by Gossipsub (e.g., new messages or peer discovery).
-    GossipSub(gossipsub::Event),
+    GossipSub(Box<gossipsub::Event>),
 
     /// Event triggered by mDNS for peer discovery and expiration.
     Mdns(mdns::Event),
@@ -65,7 +65,7 @@ pub enum CustomBehaviourEvent {
 impl From<gossipsub::Event> for CustomBehaviourEvent {
     /// Converts a Gossipsub event into a `CustomBehaviourEvent`.
     fn from(event: gossipsub::Event) -> Self {
-        CustomBehaviourEvent::GossipSub(event)
+        CustomBehaviourEvent::GossipSub(Box::new(event))
     }
 }
 
@@ -179,10 +179,9 @@ pub fn init_network() -> Result<(Swarm<CustomBehaviour>, gossipsub::IdentTopic, 
         enable_ipv6: false,
         ttl: Duration::from_secs(20),
         query_interval: Duration::from_secs(10),
-        ..Default::default()
     };
 
-    let mdns = mdns::tokio::Behaviour::new(mdns_config, local_peer_id.clone())?;
+    let mdns = mdns::tokio::Behaviour::new(mdns_config, local_peer_id)?;
 
     // Combine behaviours into a single network behaviour
     let behaviour = CustomBehaviour { gossipsub, mdns };
@@ -190,7 +189,7 @@ pub fn init_network() -> Result<(Swarm<CustomBehaviour>, gossipsub::IdentTopic, 
     // Build the Swarm (the libp2p network stack)
     let mut swarm = libp2p::SwarmBuilder::with_existing_identity(local_key)
         .with_tokio()
-        .with_tcp(tcp::Config::default(), noise::Config::new, || yamux::Config::default())?
+        .with_tcp(tcp::Config::default(), noise::Config::new, yamux::Config::default)?
         .with_behaviour(|_| Ok(behaviour))?
         .build();
 
@@ -289,80 +288,82 @@ pub fn handle_event(
 ) {
     match event {
         //Handle Gossipsub messages
-        SwarmEvent::Behaviour(CustomBehaviourEvent::GossipSub(gossipsub::Event::Message { message, .. })) => {
-            if let Ok(decoded) = serde_json::from_slice::<NetworkMessage>(&message.data) {
-                match decoded.message_type {
-                    //Handle NewBlock message
-                    NetworkMessageData::NewBlock(block_data) => {
-                        info!("New Block Received: {:?}", block_data);
+        SwarmEvent::Behaviour(CustomBehaviourEvent::GossipSub(boxed)) => {
+            if let gossipsub::Event::Message { message, .. } = *boxed {
+                if let Ok(decoded) = serde_json::from_slice::<NetworkMessage>(&message.data) {
+                    match decoded.message_type {
+                        //Handle NewBlock message
+                        NetworkMessageData::NewBlock(block_data) => {
+                            info!("New Block Received: {:?}", block_data);
 
-                        // Deserialize the received block data
-                        let block: Block = match serde_json::from_str(&block_data) {
-                            Ok(b) => b,
-                            Err(e) => {
-                                error!("Failed to deserialize Block: {:?}", e);
+                            // Deserialize the received block data
+                            let block: Block = match serde_json::from_str(&block_data) {
+                                Ok(b) => b,
+                                Err(e) => {
+                                    error!("Failed to deserialize Block: {:?}", e);
+                                    return;
+                                }
+                            };
+
+                            // Add block after validation
+                            if !local_blockchain.add_block(block) {
+                                error!("Invalid block received. Requesting full chain for validation...");
+                                broadcast_message(swarm, topic, NetworkMessageData::ChainRequest);
                                 return;
                             }
-                        };
-
-                        // Add block after validation
-                        if !local_blockchain.add_block(block) {
-                            error!("Invalid block received. Requesting full chain for validation...");
-                            broadcast_message(swarm, topic, NetworkMessageData::ChainRequest);
-                            return;
+                            info!("Successfully added the block to local blockchain!");
                         }
-                        info!("Successfully added the block to local blockchain!");
-                    }
 
-                    //Handle ChainRequest message
-                    NetworkMessageData::ChainRequest => {
-                        info!("Chain requested by peer {:?}", message.source);
+                        //Handle ChainRequest message
+                        NetworkMessageData::ChainRequest => {
+                            info!("Chain requested by peer {:?}", message.source);
 
-                        // Serialize local blockchain and send as ChainResponse
-                        let serialized_blocks: Vec<String> = local_blockchain.get_blocks()
-                            .iter()
-                            .map(|block| serde_json::to_string(block).unwrap())
-                            .collect();
+                            // Serialize local blockchain and send as ChainResponse
+                            let serialized_blocks: Vec<String> = local_blockchain.get_blocks()
+                                .iter()
+                                .map(|block| serde_json::to_string(block).unwrap())
+                                .collect();
 
-                        let response = NetworkMessageData::ChainResponse(serialized_blocks);
-                        broadcast_message(swarm, topic, response);
-                        
-                    }
+                            let response = NetworkMessageData::ChainResponse(serialized_blocks);
+                            broadcast_message(swarm, topic, response);
+                            
+                        }
 
-                    //Handle ChainResponse message
-                    NetworkMessageData::ChainResponse(serialized_blocks) => {
-                        let mut deserialized_chain = Vec::new();
+                        //Handle ChainResponse message
+                        NetworkMessageData::ChainResponse(serialized_blocks) => {
+                            let mut deserialized_chain = Vec::new();
 
-                        // Deserialize the received chain
-                        for block_str in serialized_blocks {
-                            match serde_json::from_str::<Block>(&block_str) {
-                                Ok(block) => deserialized_chain.push(block),
-                                Err(e) => error!("Error deserializing block: {:?}", e),
+                            // Deserialize the received chain
+                            for block_str in serialized_blocks {
+                                match serde_json::from_str::<Block>(&block_str) {
+                                    Ok(block) => deserialized_chain.push(block),
+                                    Err(e) => error!("Error deserializing block: {:?}", e),
+                                }
                             }
-                        }
 
-                        // Replace local chain if received chain is longer
-                        // if deserialized_chain.len() > local_blockchain.get_blocks().len() {
-                        //     info!("Replacing local chain with received chain.");
-                        //     *local_blockchain = Blockchain::from_blocks(deserialized_chain);
-                        if deserialized_chain.len() > local_blockchain.get_blocks().len() {
-                            let candidate = Blockchain::from_blocks(deserialized_chain);
-                            if candidate.is_valid() {
-                                info!("Replacing local chain with longer valid chain.");
-                                *local_blockchain = candidate;
+                            // Replace local chain if received chain is longer
+                            // if deserialized_chain.len() > local_blockchain.get_blocks().len() {
+                            //     info!("Replacing local chain with received chain.");
+                            //     *local_blockchain = Blockchain::from_blocks(deserialized_chain);
+                            if deserialized_chain.len() > local_blockchain.get_blocks().len() {
+                                let candidate = Blockchain::from_blocks(deserialized_chain);
+                                if candidate.is_valid() {
+                                    info!("Replacing local chain with longer valid chain.");
+                                    *local_blockchain = candidate;
+                                } else {
+                                    error!("Received longer chain is invalid. Ignoring.");
+                                }
+                            } else if (deserialized_chain.len() == local_blockchain.get_blocks().len()) && deserialized_chain.len() == 1 {
+                                info!("Synchronizing with existing chain!");
+                                *local_blockchain = Blockchain::from_blocks(deserialized_chain);
                             } else {
-                                error!("Received longer chain is invalid. Ignoring.");
+                                info!("Received chain is not longer than the local chain. Ignoring.");
                             }
-                        } else if (deserialized_chain.len() == local_blockchain.get_blocks().len()) && deserialized_chain.len() == 1 {
-                            info!("Synchronizing with existing chain!");
-                            *local_blockchain = Blockchain::from_blocks(deserialized_chain);
-                        } else {
-                            info!("Received chain is not longer than the local chain. Ignoring.");
                         }
                     }
+                } else {
+                    error!("Received invalid message from {:?}", message.source);
                 }
-            } else {
-                error!("Received invalid message from {:?}", message.source);
             }
         }
 
@@ -402,18 +403,20 @@ pub async fn handle_phase1(
     swarm: &mut Swarm<CustomBehaviour>,
 ) {
     loop {
-        if let Some(event) = swarm.next().await {
-            match event {
-        
-                SwarmEvent::Behaviour(CustomBehaviourEvent::Mdns(mdns::Event::Discovered(peers))) => {
-                    for (peer_id, _) in peers {
-                        info!("New peer discovered: {:?}", peer_id);
-                        swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
-                    }
-                }
-                _ => {}
-            }
+        // if let Some(event) = swarm.next().await {
+        //     if let SwarmEvent::Behaviour(CustomBehaviourEvent::Mdns(mdns::Event::Discovered(peers))) = event {
+        //         for (peer_id, _) in peers {
+        //             info!("New peer discovered: {:?}", peer_id);
+        //             swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
+        //         }
+        //     }
             
+        // }
+        if let Some(SwarmEvent::Behaviour(CustomBehaviourEvent::Mdns(mdns::Event::Discovered(peers)))) = swarm.next().await {
+            for (peer_id, _) in peers {
+                info!("New peer discovered: {:?}", peer_id);
+                swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
+            }
         }
     }
 }
