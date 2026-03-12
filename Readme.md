@@ -59,6 +59,20 @@ RUST_LOG=info cargo run
 ```
 
 ---
+## Running with Docker
+
+If you don't have Rust installed, you can run nodes using Docker.
+
+**Build the Image:**
+```bash
+docker build -t p2p-blockchain-rust .
+```
+
+**Start a peer node:**
+```bash
+docker run --rm -it --network host p2p-blockchain-rust
+```
+---
 
 ## CLI Commands
 
