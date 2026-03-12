@@ -1,8 +1,7 @@
 use tokio::{io, io::AsyncBufReadExt, select, time::{sleep, timeout, Duration}};
 use futures::stream::StreamExt;
 use std::error::Error;
-use log::info;
-use pretty_env_logger;
+
 
 mod block;
 mod blockchain;
@@ -41,7 +40,6 @@ use block::Block;
 /// ```
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    pretty_env_logger::init();
 
     // * Initialize P2P network and networking behaviour
     let (mut swarm, topic, peer_id) = init_network()?;
@@ -53,7 +51,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     * -> If peers are discovered, sync with their chain (preferably the longest one)
     * -> If no peers are discovered after timeout, proceed with a new blockchain
     */
-    info!("Node running. Phase1: mDNS discovery...");
+    println!("Node running. Phase1: mDNS discovery...");
 
     let sync_timeout = Duration::from_secs(1);
     let _sync_result = timeout(sync_timeout, handle_phase1(&mut swarm)).await;
@@ -65,7 +63,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     * Phase2:
     * -> Continue with the main event loop handling stdin commands and swarm events
     */
-    info!("Phase2: Main event loop");
+    println!("Phase2: Main event loop");
     let mut stdin = io::BufReader::new(io::stdin()).lines();
 
     loop {
@@ -75,8 +73,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 match line.as_str() {
                     //List connected peers
                     cmd if cmd.starts_with("ls p") => {
-                        info!("My id: {:?}\n", peer_id);
-                        list_peers(&mut swarm);
+                        println!("My id: {:?}\n", peer_id);
+                        list_peers(&swarm);
                     }
 
                     //Add a new block with user-provided data
@@ -87,41 +85,48 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             let tx1 = Transaction::new(data.to_string());
 
                             // Create the new block
-                            let prev_block = local_blockchain.get_last_block().unwrap();
+                            let Some(prev_block) = local_blockchain.get_last_block() else {
+                                tracing::error!("Blockchain has no blocks — this should never happen");
+                                continue;
+                            };
                             let new_block = Block::new_block(
                                 prev_block.get_hash().to_string(),
-                                &vec![tx1],
+                                &[tx1],
                                 prev_block.get_height() + 1,
                             );
                             // Add to local blockchain
                             local_blockchain.add_block(new_block.clone());
 
                             // Artificial delay
+                            // Intentional delay to allow manual testing of concurrent block addition across peers.
+                            // This gives time to add a block on another node simultaneously,
+                            // demonstrating the longest-chain consensus rule.
                             sleep(Duration::from_secs(2)).await;
+
                             // Publish it to the network
                             let serialized_block = serde_json::to_string(&new_block).unwrap();
                             broadcast_message(&mut swarm, &topic, NetworkMessageData::NewBlock(serialized_block));
 
 
-                            info!("Block added and broadcasted: {}", data);
+                            println!("Block added and broadcasted: {}", data);
                         }
                     }
 
                     // List the current blockchain
                     cmd if cmd.starts_with("ls chain") => {
-                        info!("Current Blockchain:");
+                        println!("Current Blockchain:");
                         for block in local_blockchain.get_blocks() {
-                            info!("---------------------------");
-                            info!("Height: {}", block.get_height());
-                            info!("Timestamp: {}", block.get_timestamp());
-                            info!("Transactions: {:?}", block.get_transactions());
-                            info!("Previous Hash: {}", block.get_pre_block_hash());
-                            info!("Hash: {}", block.get_hash());
-                            info!("Nonce: {}", block.get_nonce());
+                            println!("---------------------------");
+                            println!("Height: {}", block.get_height());
+                            println!("Timestamp: {}", block.get_timestamp());
+                            println!("Transactions: {:?}", block.get_transactions());
+                            println!("Previous Hash: {}", block.get_pre_block_hash());
+                            println!("Hash: {}", block.get_hash());
+                            println!("Nonce: {}", block.get_nonce());
                         }
                     }
 
-                    _ => info!("Unknown command"),
+                    _ => println!("Unknown command"),
                 }
             }
 

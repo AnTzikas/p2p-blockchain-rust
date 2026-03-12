@@ -15,7 +15,8 @@ use serde::{Serialize, Deserialize};
 use tracing_subscriber::EnvFilter;
 use std::collections::HashSet;
 use futures::StreamExt;
-use log::{info, error};
+use tracing::{info, error};
+
 
 use crate::blockchain::Blockchain;
 use crate::block::Block;
@@ -249,7 +250,7 @@ pub fn broadcast_message(
 /// ```
 /// list_peers(&mut swarm);
 /// ```
-pub fn list_peers(swarm: &mut Swarm<CustomBehaviour>) {
+pub fn list_peers(swarm: &Swarm<CustomBehaviour>) {
     info!("Connected peers:");
     let peers: HashSet<_> = swarm.behaviour().mdns.discovered_nodes().collect();
     for peer in peers {
@@ -325,8 +326,7 @@ pub fn handle_event(
 
                         let response = NetworkMessageData::ChainResponse(serialized_blocks);
                         broadcast_message(swarm, topic, response);
-                        // let data = serde_json::to_vec(&response).unwrap();
-                        // swarm.behaviour_mut().gossipsub.publish(topic.clone(), data).unwrap();
+                        
                     }
 
                     //Handle ChainResponse message
@@ -342,9 +342,17 @@ pub fn handle_event(
                         }
 
                         // Replace local chain if received chain is longer
+                        // if deserialized_chain.len() > local_blockchain.get_blocks().len() {
+                        //     info!("Replacing local chain with received chain.");
+                        //     *local_blockchain = Blockchain::from_blocks(deserialized_chain);
                         if deserialized_chain.len() > local_blockchain.get_blocks().len() {
-                            info!("Replacing local chain with received chain.");
-                            *local_blockchain = Blockchain::from_blocks(deserialized_chain);
+                            let candidate = Blockchain::from_blocks(deserialized_chain);
+                            if candidate.is_valid() {
+                                info!("Replacing local chain with longer valid chain.");
+                                *local_blockchain = candidate;
+                            } else {
+                                error!("Received longer chain is invalid. Ignoring.");
+                            }
                         } else if (deserialized_chain.len() == local_blockchain.get_blocks().len()) && deserialized_chain.len() == 1 {
                             info!("Synchronizing with existing chain!");
                             *local_blockchain = Blockchain::from_blocks(deserialized_chain);
