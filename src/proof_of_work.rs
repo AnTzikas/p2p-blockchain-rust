@@ -127,3 +127,19 @@ impl ProofOfWork {
         (nonce, HEXLOWER.encode(hash.as_slice()))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::transaction::Transaction;
+    use crate::block::Block;
+
+    #[test]
+    fn test_pow_produces_valid_hash() {
+        let tx = Transaction::new("test".to_string());
+        let block = Block::new_block("prev".to_string(), &[tx], 1);
+        let pow = ProofOfWork::new_proof_of_work(block.clone());
+        let (_, hash) = pow.run();
+        assert_eq!(block.get_hash(), hash);
+    }
+}
